@@ -1,0 +1,388 @@
+name: Codex Implement Ticket
+description: Pick the next eligible Codex issue, implement it, and open or update a pull request.
+branding:
+  icon: cpu
+  color: purple
+
+inputs:
+  github-token:
+    description: GitHub token used by gh and checkout.
+    required: true
+  repository:
+    description: Repository in owner/name format.
+    required: true
+  event-name:
+    description: Triggering GitHub event name.
+    required: true
+  event-issue-number:
+    description: Issue number from the triggering issue event, if any.
+    required: false
+    default: ""
+  base-branch:
+    description: Base branch for implementation pull requests.
+    required: false
+    default: master
+  usage-threshold:
+    description: Minimum remaining usage percentage required for Codex to run.
+    required: false
+    default: "20"
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+        token: ${{ inputs.github-token }}
+
+    - name: Ensure automation labels exist
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        gh label create "codex:implement" --color "5319E7" --description "Opt-in: issue is eligible for Codex automation" --force >/dev/null 2>&1 || true
+        gh label create "codex:queued" --color "FBCA04" --description "Queued for Codex processing" --force >/dev/null 2>&1 || true
+        gh label create "codex:running" --color "0E8A16" --description "Currently being processed by Codex" --force >/dev/null 2>&1 || true
+        gh label create "codex:pr-open" --color "1D76DB" --description "Implementation PR is open" --force >/dev/null 2>&1 || true
+        gh label create "codex:needs-human" --color "D93F0B" --description "Needs human input or decision" --force >/dev/null 2>&1 || true
+        gh label create "codex:error" --color "B60205" --description "Automation failed; check workflow logs" --force >/dev/null 2>&1 || true
+
+    - name: Resolve target issue
+      id: issue
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        EVENT_NAME: ${{ inputs.event-name }}
+        EVENT_ISSUE_NUMBER: ${{ inputs.event-issue-number }}
+      run: |
+        oldest_implement_issue="$(gh issue list \
+          --state open \
+          --label "codex:implement" \
+          --limit 100 \
+          --json number,createdAt \
+          --jq 'sort_by(.number) | .[0].number // ""')"
+
+        if [[ -z "$oldest_implement_issue" ]]; then
+          echo "issue_number=" >> "$GITHUB_OUTPUT"
+          echo "reason=no_open_codex_implement_issues" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        active_issue="$(gh issue list --state open --label "codex:running" --limit 1 --json number --jq '.[0].number // ""')"
+        if [[ -z "$active_issue" ]]; then
+          active_issue="$(gh issue list --state open --label "codex:pr-open" --limit 1 --json number --jq '.[0].number // ""')"
+        fi
+        if [[ -n "$active_issue" ]]; then
+          echo "issue_number=" >> "$GITHUB_OUTPUT"
+          echo "reason=another_issue_active_${active_issue}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        selected=""
+
+        if [[ "$EVENT_NAME" == "issues" && -n "${EVENT_ISSUE_NUMBER:-}" ]]; then
+          has_implement_label="$(gh issue view "$EVENT_ISSUE_NUMBER" --json labels --jq '[.labels[].name] | any(. == "codex:implement")')"
+          if [[ "$has_implement_label" == "true" && "$EVENT_ISSUE_NUMBER" == "$oldest_implement_issue" ]]; then
+            selected="$oldest_implement_issue"
+          fi
+        fi
+
+        if [[ -z "$selected" ]]; then
+          selected="$oldest_implement_issue"
+        fi
+
+        echo "issue_number=$selected" >> "$GITHUB_OUTPUT"
+
+    - name: Stop if no eligible issue
+      if: ${{ steps.issue.outputs.issue_number == '' }}
+      shell: bash
+      run: echo "No eligible issue to process."
+
+    - name: Mark issue as queued/running
+      if: ${{ steps.issue.outputs.issue_number != '' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
+      run: |
+        gh issue edit "$ISSUE_NUMBER" --add-label "codex:queued" >/dev/null
+        gh issue edit "$ISSUE_NUMBER" --remove-label "codex:queued" --add-label "codex:running" >/dev/null
+
+    - name: Rate limit guard
+      if: ${{ steps.issue.outputs.issue_number != '' }}
+      id: guard
+      shell: bash
+      env:
+        THRESHOLD: ${{ inputs.usage-threshold }}
+      run: |
+        set -euo pipefail
+
+        auth_file="${CODEX_HOME:-$HOME/.codex}/auth.json"
+
+        if [[ ! -f "$auth_file" ]]; then
+          echo "allow=false" >> "$GITHUB_OUTPUT"
+          echo "reason=missing_auth_file" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        token="$(
+          jq -r '
+            [
+              .token,
+              .access_token,
+              .id_token,
+              .oauth_token,
+              .chatgpt?.token,
+              .chatgpt?.access_token,
+              .auth?.token,
+              .auth?.access_token,
+              .credentials?.token,
+              .credentials?.access_token,
+              .session?.token,
+              .session?.access_token,
+              .tokens?.access_token,
+              .tokens?.id_token,
+              (
+                paths(scalars) as $p
+                | (getpath($p) | tostring) as $v
+                | ($p | map(tostring) | join(".")) as $k
+                | select(
+                    ($k | test("(^|\\.)(access_token|accessToken|id_token|idToken|token)$"))
+                    and ($v | length > 20)
+                  )
+                | $v
+              )
+            ]
+            | map(select(type == "string" and length > 20))
+            | .[0] // ""
+          ' "$auth_file"
+        )"
+        if [[ -z "$token" ]]; then
+          auth_keys="$(jq -r 'keys_unsorted | join(",")' "$auth_file" 2>/dev/null || echo "unknown")"
+          echo "allow=false" >> "$GITHUB_OUTPUT"
+          echo "reason=missing_token_auth_keys_${auth_keys}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        resp_file="$(mktemp)"
+        code="$(curl -sS -o "$resp_file" -w "%{http_code}" \
+          -H "Authorization: Bearer ${token}" \
+          "https://chatgpt.com/backend-api/wham/usage")"
+
+        if [[ "$code" -lt 200 || "$code" -ge 300 ]]; then
+          echo "allow=false" >> "$GITHUB_OUTPUT"
+          echo "reason=usage_endpoint_http_${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        five_hour_remaining="$(jq -r '
+          .["5h"]?.remaining_percent
+          // .five_hour?.remaining_percent
+          // .fiveHour?.remainingPercent
+          // .limits?.five_hour?.remaining_percent
+          // .limits?.["5h"]?.remaining_percent
+          // (if .rate_limit?.primary_window?.used_percent != null then (100 - (.rate_limit.primary_window.used_percent | tonumber)) else empty end)
+          // empty
+        ' "$resp_file")"
+
+        weekly_remaining="$(jq -r '
+          .weekly?.remaining_percent
+          // .week?.remaining_percent
+          // .limits?.weekly?.remaining_percent
+          // (if .rate_limit?.secondary_window?.used_percent != null then (100 - (.rate_limit.secondary_window.used_percent | tonumber)) else empty end)
+          // empty
+        ' "$resp_file")"
+
+        if [[ -z "$five_hour_remaining" || -z "$weekly_remaining" ]]; then
+          echo "allow=false" >> "$GITHUB_OUTPUT"
+          echo "reason=missing_remaining_percent_fields" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "five_hour_remaining=${five_hour_remaining}" >> "$GITHUB_OUTPUT"
+        echo "weekly_remaining=${weekly_remaining}" >> "$GITHUB_OUTPUT"
+
+        if (( ${five_hour_remaining%.*} <= THRESHOLD || ${weekly_remaining%.*} <= THRESHOLD )); then
+          echo "allow=false" >> "$GITHUB_OUTPUT"
+          echo "reason=below_or_equal_threshold_${THRESHOLD}" >> "$GITHUB_OUTPUT"
+        else
+          echo "allow=true" >> "$GITHUB_OUTPUT"
+          echo "reason=ok" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Pause issue when usage is too low
+      if: ${{ steps.issue.outputs.issue_number != '' && steps.guard.outputs.allow != 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
+        REASON: ${{ steps.guard.outputs.reason }}
+        FIVE_HOUR: ${{ steps.guard.outputs.five_hour_remaining }}
+        WEEKLY: ${{ steps.guard.outputs.weekly_remaining }}
+      run: |
+        gh issue edit "$ISSUE_NUMBER" --remove-label "codex:running,codex:needs-human" --add-label "codex:queued" >/dev/null
+        gh issue comment "$ISSUE_NUMBER" --body "Codex automation deferred by usage guard (${REASON}). Remaining: 5h=${FIVE_HOUR:-unknown}% weekly=${WEEKLY:-unknown}%. It will retry on the next scheduled run."
+
+    - name: Resolve model/reasoning from labels
+      if: ${{ steps.issue.outputs.issue_number != '' && steps.guard.outputs.allow == 'true' }}
+      id: config
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
+      run: |
+        gh issue view "$ISSUE_NUMBER" --json labels > /tmp/issue_labels.json
+
+        model="$(jq -r '
+          def label_names:
+            (.labels // [])
+            | map(
+                if type == "object" then (.name // empty)
+                elif type == "string" then .
+                else empty
+                end
+              );
+
+          (label_names
+            | map(select(startswith("codex:model:")) | sub("^codex:model:"; ""))
+            | .[0]) // "gpt-5.4"
+        ' /tmp/issue_labels.json)"
+
+        reasoning="$(jq -r '
+          def label_names:
+            (.labels // [])
+            | map(
+                if type == "object" then (.name // empty)
+                elif type == "string" then .
+                else empty
+                end
+              );
+
+          (label_names
+            | map(select(startswith("codex:reasoning:")) | sub("^codex:reasoning:"; ""))
+            | .[0]) // "medium"
+        ' /tmp/issue_labels.json)"
+
+        echo "model=${model}" >> "$GITHUB_OUTPUT"
+        echo "reasoning=${reasoning}" >> "$GITHUB_OUTPUT"
+
+    - name: Run Codex for issue implementation
+      if: ${{ steps.issue.outputs.issue_number != '' && steps.guard.outputs.allow == 'true' }}
+      id: codex_run
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
+        CODEX_MODEL: ${{ steps.config.outputs.model }}
+        CODEX_REASONING: ${{ steps.config.outputs.reasoning }}
+        REPO: ${{ inputs.repository }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+      run: |
+        set -euo pipefail
+        issue_json="$(gh issue view "$ISSUE_NUMBER" --json number,title,body,url)"
+        title="$(jq -r '.title' <<< "$issue_json")"
+        body="$(jq -r '.body // ""' <<< "$issue_json")"
+        url="$(jq -r '.url' <<< "$issue_json")"
+
+        git reset --hard HEAD
+        git clean -fd
+
+        branch="codex/issue-${ISSUE_NUMBER}"
+        git checkout -B "$branch"
+        git config user.name "Codex"
+        git config user.email "noreply@openai.com"
+
+        prompt_file="$(mktemp)"
+        {
+          printf 'You are implementing GitHub issue #%s in repository %s.\n\n' "$ISSUE_NUMBER" "$REPO"
+          printf 'Issue URL: %s\n' "$url"
+          printf 'Issue title: %s\n\n' "$title"
+          printf 'Issue description:\n%s\n\n' "$body"
+          printf 'Requirements:\n'
+          printf '1. Implement the requested changes in this local repository.\n'
+          printf '2. Run relevant tests/checks if available and fix obvious failures.\n'
+          printf '3. Keep changes focused to this issue.\n'
+          printf '4. Commit the changes with a clear, context-aware commit message and include trailer: "Co-authored-by: Codex <noreply@openai.com>".\n'
+          printf '5. Push the branch "%s" to origin.\n' "$branch"
+          printf '6. Open a pull request to base branch "%s" with a context-aware title and description, and include "Closes #%s" in the PR description.\n' "$BASE_BRANCH" "$ISSUE_NUMBER"
+          printf '7. If a PR for this branch already exists, update/push branch only and do not create a duplicate PR.\n'
+          printf '8. At the end, print a short summary of what changed.\n'
+        } > "$prompt_file"
+
+        reasoning="${CODEX_REASONING:-medium}"
+        if [[ -z "$reasoning" ]]; then
+          reasoning="medium"
+        fi
+
+        codex_log="$(mktemp)"
+        codex exec \
+          --json \
+          --dangerously-bypass-approvals-and-sandbox \
+          --model "$CODEX_MODEL" \
+          -c "model_reasoning_effort=$reasoning" \
+          "$(cat "$prompt_file")" | tee "$codex_log"
+
+        session_id="$(
+          jq -r '
+            select(type == "object")
+            | (
+                if .type == "session_meta" then .payload.id
+                else (.session_id // .thread_id // .id // empty)
+                end
+              )
+            | select(type == "string")
+          ' "$codex_log" 2>/dev/null \
+          | grep -E '^[0-9a-fA-F-]{36}$' \
+          | head -n1 || true
+        )"
+        echo "New Codex session id: ${session_id:-<none>}"
+        echo "session_id=${session_id}" >> "$GITHUB_OUTPUT"
+
+    - name: Ensure PR exists
+      if: ${{ steps.issue.outputs.issue_number != '' && steps.guard.outputs.allow == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
+        CODEX_SESSION_ID: ${{ steps.codex_run.outputs.session_id }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+      run: |
+        set -euo pipefail
+        branch="codex/issue-${ISSUE_NUMBER}"
+        pr_url="$(gh pr list --state open --head "$branch" --json url --jq '.[0].url // ""')"
+        if [[ -z "$pr_url" ]]; then
+          if git rev-parse --verify "origin/${branch}" >/dev/null 2>&1; then
+            pr_url="$(gh pr create \
+              --title "Codex: implement issue #${ISSUE_NUMBER}" \
+              --body "Automated Codex implementation for Closes #${ISSUE_NUMBER}." \
+              --base "$BASE_BRANCH" \
+              --head "$branch")"
+          else
+            gh issue edit "$ISSUE_NUMBER" --remove-label "codex:running" --add-label "codex:needs-human" >/dev/null
+            gh issue comment "$ISSUE_NUMBER" --body "Codex run completed but no branch push was detected, so no PR could be created."
+            exit 0
+          fi
+        fi
+
+        if [[ -n "${CODEX_SESSION_ID:-}" ]]; then
+          pr_body_current="$(gh pr view "$pr_url" --json body --jq '.body // ""')"
+          existing_session_id="$(printf '%s' "$pr_body_current" | grep -Eo 'codex-session-id: [0-9a-fA-F-]{36}' | awk '{print $2}' | head -n1 || true)"
+          if [[ -z "$existing_session_id" ]]; then
+            pr_body_new="${pr_body_current}"$'\n\n'"<!-- codex-session-id: ${CODEX_SESSION_ID} -->"
+            gh pr edit "$pr_url" --body "$pr_body_new"
+          fi
+        fi
+
+        gh issue edit "$ISSUE_NUMBER" --remove-label "codex:running" --add-label "codex:pr-open" >/dev/null
+        gh issue comment "$ISSUE_NUMBER" --body "Created PR: ${pr_url}"
+
+    - name: Mark error state
+      if: ${{ failure() && steps.issue.outputs.issue_number != '' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
+      run: |
+        gh issue edit "$ISSUE_NUMBER" --remove-label "codex:running" --add-label "codex:error,codex:needs-human" >/dev/null || true
+        gh issue comment "$ISSUE_NUMBER" --body "Codex automation failed in this run. Please inspect workflow logs." || true

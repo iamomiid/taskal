@@ -1,0 +1,392 @@
+name: Codex PR Feedback
+description: Apply pull request feedback and push the result.
+branding:
+  icon: message-square
+  color: purple
+
+inputs:
+  github-token:
+    description: GitHub token used by gh and checkout.
+    required: true
+  repository:
+    description: Repository in owner/name format.
+    required: true
+  event-name:
+    description: Triggering GitHub event name.
+    required: true
+  issue-number:
+    description: Issue number for issue_comment events.
+    required: false
+    default: ""
+  pull-request-number:
+    description: Pull request number for review events.
+    required: false
+    default: ""
+  issue-comment-author:
+    description: Author login for issue_comment events.
+    required: false
+    default: ""
+  review-author:
+    description: Author login for pull_request_review events.
+    required: false
+    default: ""
+  review-comment-id:
+    description: Review comment id for pull_request_review_comment events.
+    required: false
+    default: ""
+  issue-comment-id:
+    description: Issue comment id for issue_comment events.
+    required: false
+    default: ""
+  review-id:
+    description: Review id for pull_request_review events.
+    required: false
+    default: ""
+  feedback:
+    description: The feedback text to apply.
+    required: true
+  usage-threshold:
+    description: Minimum remaining usage percentage required for Codex to run.
+    required: false
+    default: "20"
+
+runs:
+  using: composite
+  steps:
+    - name: Acknowledge Codex feedback request
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repository }}
+        EVENT_NAME: ${{ inputs.event-name }}
+        PR_NUMBER: ${{ inputs.pull-request-number }}
+        ISSUE_COMMENT_ID: ${{ inputs.issue-comment-id }}
+        REVIEW_COMMENT_ID: ${{ inputs.review-comment-id }}
+        REVIEW_ID: ${{ inputs.review-id }}
+      run: |
+        if [[ "$EVENT_NAME" == "pull_request_review_comment" ]]; then
+          gh api \
+            -X POST \
+            "repos/${REPO}/pulls/comments/${REVIEW_COMMENT_ID}/reactions" \
+            -f content='eyes' >/dev/null 2>&1 || true
+        elif [[ "$EVENT_NAME" == "issue_comment" ]]; then
+          gh api \
+            -X POST \
+            "repos/${REPO}/issues/comments/${ISSUE_COMMENT_ID}/reactions" \
+            -f content='eyes' >/dev/null 2>&1 || true
+        else
+          gh api \
+            -X POST \
+            "repos/${REPO}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}/reactions" \
+            -f content='eyes' >/dev/null 2>&1 || true
+        fi
+
+    - name: Checkout repository
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+        token: ${{ inputs.github-token }}
+
+    - name: Resolve PR number
+      id: pr
+      shell: bash
+      env:
+        EVENT_NAME: ${{ inputs.event-name }}
+        ISSUE_NUMBER: ${{ inputs.issue-number }}
+        PULL_REQUEST_NUMBER: ${{ inputs.pull-request-number }}
+      run: |
+        if [[ "$EVENT_NAME" == "issue_comment" ]]; then
+          echo "number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+        else
+          echo "number=${PULL_REQUEST_NUMBER}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Rate limit guard
+      id: guard
+      shell: bash
+      env:
+        THRESHOLD: ${{ inputs.usage-threshold }}
+      run: |
+        set -euo pipefail
+
+        auth_file="${CODEX_HOME:-$HOME/.codex}/auth.json"
+
+        if [[ ! -f "$auth_file" ]]; then
+          echo "allow=false" >> "$GITHUB_OUTPUT"
+          echo "reason=missing_auth_file" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        token="$(
+          jq -r '
+            [
+              .token,
+              .access_token,
+              .id_token,
+              .oauth_token,
+              .chatgpt?.token,
+              .chatgpt?.access_token,
+              .auth?.token,
+              .auth?.access_token,
+              .credentials?.token,
+              .credentials?.access_token,
+              .session?.token,
+              .session?.access_token,
+              .tokens?.access_token,
+              .tokens?.id_token,
+              (
+                paths(scalars) as $p
+                | (getpath($p) | tostring) as $v
+                | ($p | map(tostring) | join(".")) as $k
+                | select(
+                    ($k | test("(^|\\.)(access_token|accessToken|id_token|idToken|token)$"))
+                    and ($v | length > 20)
+                  )
+                | $v
+              )
+            ]
+            | map(select(type == "string" and length > 20))
+            | .[0] // ""
+          ' "$auth_file"
+        )"
+        if [[ -z "$token" ]]; then
+          auth_keys="$(jq -r 'keys_unsorted | join(",")' "$auth_file" 2>/dev/null || echo "unknown")"
+          echo "allow=false" >> "$GITHUB_OUTPUT"
+          echo "reason=missing_token_auth_keys_${auth_keys}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        resp_file="$(mktemp)"
+        code="$(curl -sS -o "$resp_file" -w "%{http_code}" \
+          -H "Authorization: Bearer ${token}" \
+          "https://chatgpt.com/backend-api/wham/usage")"
+
+        if [[ "$code" -lt 200 || "$code" -ge 300 ]]; then
+          echo "allow=false" >> "$GITHUB_OUTPUT"
+          echo "reason=usage_endpoint_http_${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        five_hour_remaining="$(jq -r '
+          .["5h"]?.remaining_percent
+          // .five_hour?.remaining_percent
+          // .fiveHour?.remainingPercent
+          // .limits?.five_hour?.remaining_percent
+          // .limits?.["5h"]?.remaining_percent
+          // (if .rate_limit?.primary_window?.used_percent != null then (100 - (.rate_limit.primary_window.used_percent | tonumber)) else empty end)
+          // empty
+        ' "$resp_file")"
+
+        weekly_remaining="$(jq -r '
+          .weekly?.remaining_percent
+          // .week?.remaining_percent
+          // .limits?.weekly?.remaining_percent
+          // (if .rate_limit?.secondary_window?.used_percent != null then (100 - (.rate_limit.secondary_window.used_percent | tonumber)) else empty end)
+          // empty
+        ' "$resp_file")"
+
+        if [[ -z "$five_hour_remaining" || -z "$weekly_remaining" ]]; then
+          echo "allow=false" >> "$GITHUB_OUTPUT"
+          echo "reason=missing_remaining_percent_fields" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "five_hour_remaining=${five_hour_remaining}" >> "$GITHUB_OUTPUT"
+        echo "weekly_remaining=${weekly_remaining}" >> "$GITHUB_OUTPUT"
+
+        if (( ${five_hour_remaining%.*} <= THRESHOLD || ${weekly_remaining%.*} <= THRESHOLD )); then
+          echo "allow=false" >> "$GITHUB_OUTPUT"
+          echo "reason=below_or_equal_threshold_${THRESHOLD}" >> "$GITHUB_OUTPUT"
+        else
+          echo "allow=true" >> "$GITHUB_OUTPUT"
+          echo "reason=ok" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Stop when usage is too low
+      if: ${{ steps.guard.outputs.allow != 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        REASON: ${{ steps.guard.outputs.reason }}
+        FIVE_HOUR: ${{ steps.guard.outputs.five_hour_remaining }}
+        WEEKLY: ${{ steps.guard.outputs.weekly_remaining }}
+      run: |
+        gh pr comment "$PR_NUMBER" --body "Codex feedback run paused: usage guard blocked this run (${REASON}). Remaining: 5h=${FIVE_HOUR:-unknown}% weekly=${WEEKLY:-unknown}%."
+
+    - name: Resolve model/reasoning from linked issue labels
+      if: ${{ steps.guard.outputs.allow == 'true' }}
+      id: config
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+      run: |
+        issue_number="$(gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""')"
+        if [[ -n "$issue_number" ]]; then
+          gh issue view "$issue_number" --json labels > /tmp/issue_labels.json
+        else
+          printf '{"labels":[]}\n' > /tmp/issue_labels.json
+        fi
+
+        model="$(jq -r '
+          def label_names:
+            (.labels // [])
+            | map(
+                if type == "object" then (.name // empty)
+                elif type == "string" then .
+                else empty
+                end
+              );
+
+          (label_names
+            | map(select(startswith("codex:model:")) | sub("^codex:model:"; ""))
+            | .[0]) // "gpt-5.4"
+        ' /tmp/issue_labels.json)"
+
+        reasoning="$(jq -r '
+          def label_names:
+            (.labels // [])
+            | map(
+                if type == "object" then (.name // empty)
+                elif type == "string" then .
+                else empty
+                end
+              );
+
+          (label_names
+            | map(select(startswith("codex:reasoning:")) | sub("^codex:reasoning:"; ""))
+            | .[0]) // "medium"
+        ' /tmp/issue_labels.json)"
+
+        echo "model=${model}" >> "$GITHUB_OUTPUT"
+        echo "reasoning=${reasoning}" >> "$GITHUB_OUTPUT"
+
+    - name: Checkout PR branch
+      if: ${{ steps.guard.outputs.allow == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+      run: gh pr checkout "$PR_NUMBER"
+
+    - name: Apply Codex feedback
+      if: ${{ steps.guard.outputs.allow == 'true' }}
+      id: codex_feedback
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        CODEX_MODEL: ${{ steps.config.outputs.model }}
+        CODEX_REASONING: ${{ steps.config.outputs.reasoning }}
+        FEEDBACK: ${{ inputs.feedback }}
+      run: |
+        set -euo pipefail
+        pr_json="$(gh pr view "$PR_NUMBER" --json title,body,url)"
+        pr_title="$(jq -r '.title' <<< "$pr_json")"
+        pr_body="$(jq -r '.body // ""' <<< "$pr_json")"
+        pr_url="$(jq -r '.url' <<< "$pr_json")"
+
+        resume_session_id="$(
+          gh pr view "$PR_NUMBER" --json body \
+          --jq '.body // "" | capture("codex-session-id: (?<id>[0-9a-fA-F-]{36})")?.id // empty' \
+          | head -n1 || true
+        )"
+        echo "Resuming Codex session id: ${resume_session_id:-<none>}"
+
+        prompt_file="$(mktemp)"
+        {
+          printf 'Apply the requested changes to this pull request.\n\n'
+          printf 'PR: %s\n' "$pr_url"
+          printf 'PR title: %s\n' "$pr_title"
+          printf 'PR body:\n%s\n\n' "$pr_body"
+          printf 'Feedback to address:\n%s\n\n' "$FEEDBACK"
+          printf 'Requirements:\n'
+          printf '1. Implement the requested changes in this checked-out branch.\n'
+          printf '2. Run relevant tests/checks if available.\n'
+          printf '3. Keep the PR focused and do not revert unrelated edits.\n'
+          printf '4. Summarize what changed.\n'
+        } > "$prompt_file"
+
+        reasoning="${CODEX_REASONING:-medium}"
+        if [[ -z "$reasoning" ]]; then
+          reasoning="medium"
+        fi
+
+        codex_log="$(mktemp)"
+        if [[ -n "$resume_session_id" ]]; then
+          codex exec resume \
+            --json \
+            --dangerously-bypass-approvals-and-sandbox \
+            --model "$CODEX_MODEL" \
+            -c "model_reasoning_effort=$reasoning" \
+            "$resume_session_id" \
+            "$(cat "$prompt_file")" | tee "$codex_log"
+        else
+          codex exec \
+            --json \
+            --dangerously-bypass-approvals-and-sandbox \
+            --model "$CODEX_MODEL" \
+            -c "model_reasoning_effort=$reasoning" \
+            "$(cat "$prompt_file")" | tee "$codex_log"
+        fi
+
+        session_id="$(
+          jq -r '
+            select(type == "object")
+            | (
+                if .type == "session_meta" then .payload.id
+                else (.session_id // .thread_id // .id // empty)
+                end
+              )
+            | select(type == "string")
+          ' "$codex_log" 2>/dev/null \
+          | grep -E '^[0-9a-fA-F-]{36}$' \
+          | head -n1 || true
+        )"
+        echo "New Codex session id: ${session_id:-<none>}"
+        echo "session_id=${session_id}" >> "$GITHUB_OUTPUT"
+
+    - name: Commit and push feedback changes
+      if: ${{ steps.guard.outputs.allow == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ steps.pr.outputs.number }}
+        CODEX_SESSION_ID: ${{ steps.codex_feedback.outputs.session_id }}
+        REPO: ${{ inputs.repository }}
+        EVENT_NAME: ${{ inputs.event-name }}
+        ISSUE_COMMENT_AUTHOR: ${{ inputs.issue-comment-author }}
+        REVIEW_AUTHOR: ${{ inputs.review-author }}
+        REVIEW_COMMENT_ID: ${{ inputs.review-comment-id }}
+      run: |
+        set -euo pipefail
+        if [[ -n "$(git status --porcelain)" ]]; then
+          git add -A
+          git config user.name "Codex"
+          git config user.email "noreply@openai.com"
+          git commit \
+            -m "Codex: apply PR feedback #${PR_NUMBER}" \
+            -m "Co-authored-by: Codex <noreply@openai.com>" || true
+          git push
+        fi
+
+        if [[ -n "${CODEX_SESSION_ID:-}" ]]; then
+          pr_body_current="$(gh pr view "$PR_NUMBER" --json body --jq '.body // ""')"
+          existing_session_id="$(printf '%s' "$pr_body_current" | grep -Eo 'codex-session-id: [0-9a-fA-F-]{36}' | awk '{print $2}' | head -n1 || true)"
+          if [[ -z "$existing_session_id" ]]; then
+            pr_body_new="${pr_body_current}"$'\n\n'"<!-- codex-session-id: ${CODEX_SESSION_ID} -->"
+            gh pr edit "$PR_NUMBER" --body "$pr_body_new"
+          fi
+        fi
+
+        if [[ "$EVENT_NAME" == "pull_request_review_comment" ]]; then
+          gh api \
+            -X POST \
+            "repos/${REPO}/pulls/${PR_NUMBER}/comments/${REVIEW_COMMENT_ID}/replies" \
+            -f body="Applied requested changes."
+        elif [[ "$EVENT_NAME" == "issue_comment" ]]; then
+          gh pr comment "$PR_NUMBER" --body "@${ISSUE_COMMENT_AUTHOR} Applied requested changes."
+        else
+          gh pr comment "$PR_NUMBER" --body "@${REVIEW_AUTHOR} Applied requested changes."
+        fi
