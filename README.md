@@ -144,6 +144,11 @@ Examples:
 - `codex:model:gpt-5.4`
 - `codex:reasoning:high`
 
+If no labels are provided, both actions default to:
+
+- model: `gpt-5.4`
+- reasoning effort: `medium`
+
 ## Important Notes
 
 - These actions are intended for self-hosted runners, not GitHub-hosted runners.

@@ -90,7 +90,7 @@ It also reads optional execution settings from labels on the issue:
 Defaults:
 
 - model: `gpt-5.4`
-- reasoning: `medium`
+- reasoning effort: `medium`
 
 ## Behavior Notes
 

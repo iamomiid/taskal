@@ -314,6 +314,8 @@ runs:
         if [[ -z "$reasoning" ]]; then
           reasoning="medium"
         fi
+        echo "Using Codex model: ${CODEX_MODEL}"
+        echo "Using reasoning effort: ${reasoning}"
 
         codex_log="$(mktemp)"
         codex exec \

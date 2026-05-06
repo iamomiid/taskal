@@ -98,7 +98,7 @@ If the pull request closes a linked issue, the action reads these labels from th
 Defaults:
 
 - model: `gpt-5.4`
-- reasoning: `medium`
+- reasoning effort: `medium`
 
 ## Behavior Notes
 
