@@ -30,6 +30,19 @@ When triggered, the action:
   - `issues: write`
   - `pull-requests: write`
 
+## GitHub Settings Required for PR Creation
+
+To allow this action to open pull requests, configure the repository in GitHub under:
+
+`Settings -> Actions -> General -> Workflow permissions`
+
+Required settings:
+
+- `Read and write permissions`
+- `Allow GitHub Actions to create and approve pull requests`
+
+If these are not enabled, the branch may be pushed successfully while PR creation still fails.
+
 ## Inputs
 
 | Name | Required | Default | Description |

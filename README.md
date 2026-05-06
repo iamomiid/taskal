@@ -26,6 +26,21 @@ The actions also read Codex auth data from:
 - `$CODEX_HOME/auth.json`, or
 - `~/.codex/auth.json`
 
+## GitHub Repository Settings
+
+If you want these actions to push branches and create pull requests, make sure your repository allows workflows to write to the repository.
+
+In GitHub, go to:
+
+`Settings -> Actions -> General -> Workflow permissions`
+
+Then:
+
+- set workflow permissions to `Read and write permissions`
+- enable the setting that allows GitHub Actions to create and approve pull requests
+
+Without these settings, the automation may still run but fail when trying to push changes or open a PR.
+
 ## Actions
 
 ### `codex-pr-feedback`
