@@ -26,7 +26,7 @@ The actions also read Codex auth data from:
 - `$CODEX_HOME/auth.json`, or
 - `~/.codex/auth.json`
 
-If Codex may change files under `.github/workflows/*`, pass an elevated repository secret as the action's optional `github-token` input. If no token is provided, the action falls back to `${{ github.token }}`.
+If Codex may change files under `.github/workflows/*`, keep normal workflow activity on `${{ github.token }}` and pass an elevated repository secret as `elevated-github-token`. The actions will only retry branch push and PR mutation operations with the elevated token.
 
 ## GitHub Repository Settings
 
@@ -93,6 +93,7 @@ jobs:
         with:
           repository: ${{ github.repository }}
           event-name: ${{ github.event_name }}
+          elevated-github-token: ${{ secrets.WORKFLOW_TOKEN }}
           issue-number: ${{ github.event.issue.number }}
           pull-request-number: ${{ github.event.pull_request.number }}
           issue-comment-author: ${{ github.event.comment.user.login }}
@@ -134,6 +135,7 @@ jobs:
           repository: ${{ github.repository }}
           event-name: ${{ github.event_name }}
           event-issue-number: ${{ github.event.issue.number }}
+          elevated-github-token: ${{ secrets.WORKFLOW_TOKEN }}
           base-branch: master
           max-active-issues: "3"
           usage-threshold: "20"
@@ -172,7 +174,7 @@ If no labels are provided, both actions default to:
 - The usage guard depends on the current Codex auth file format and the ChatGPT usage endpoint remaining compatible.
 - `codex-implement-ticket` resets and cleans the working tree before starting work inside the checked-out repository.
 - `codex-pr-feedback` resumes prior Codex context when it finds a stored session id in the PR body.
-- For repositories where Codex may edit `.github/workflows/*`, pass `github-token` with a token that can write workflow files; a fine-grained PAT or machine-user token is the safest path.
+- For repositories where Codex may edit `.github/workflows/*`, prefer `elevated-github-token` over replacing the main token. That keeps labels, comments, and most reads on `github.token` while only retrying push and PR mutations with elevated credentials.
 
 ## Versioning
 

@@ -33,20 +33,21 @@ If a prior Codex session id is stored in the PR body, the action resumes that se
 
 ## Inputs
 
-| Name | Required | Default | Description |
-| --- | --- | --- | --- |
-| `github-token` | No | `""` | Optional GitHub token used by `gh` and checkout. If omitted, the action falls back to `github.token` |
-| `repository` | Yes | - | Repository in `owner/name` format |
-| `event-name` | Yes | - | Triggering GitHub event name |
-| `issue-number` | No | `""` | Issue number for `issue_comment` events |
-| `pull-request-number` | No | `""` | Pull request number for review events |
-| `issue-comment-author` | No | `""` | Author login for `issue_comment` events |
-| `review-author` | No | `""` | Author login for `pull_request_review` events |
-| `review-comment-id` | No | `""` | Review comment id for `pull_request_review_comment` events |
-| `issue-comment-id` | No | `""` | Issue comment id for `issue_comment` events |
-| `review-id` | No | `""` | Review id for `pull_request_review` events |
-| `feedback` | Yes | - | The feedback text to apply |
-| `usage-threshold` | No | `"20"` | Minimum remaining usage percentage required for Codex to run |
+| Name                    | Required | Default | Description                                                                                          |
+| ----------------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `github-token`          | No       | `""`    | Optional GitHub token used by `gh` and checkout. If omitted, the action falls back to `github.token` |
+| `elevated-github-token` | No       | `""`    | Optional elevated GitHub token used only as a fallback for branch push and PR edit operations        |
+| `repository`            | Yes      | -       | Repository in `owner/name` format                                                                    |
+| `event-name`            | Yes      | -       | Triggering GitHub event name                                                                         |
+| `issue-number`          | No       | `""`    | Issue number for `issue_comment` events                                                              |
+| `pull-request-number`   | No       | `""`    | Pull request number for review events                                                                |
+| `issue-comment-author`  | No       | `""`    | Author login for `issue_comment` events                                                              |
+| `review-author`         | No       | `""`    | Author login for `pull_request_review` events                                                        |
+| `review-comment-id`     | No       | `""`    | Review comment id for `pull_request_review_comment` events                                           |
+| `issue-comment-id`      | No       | `""`    | Issue comment id for `issue_comment` events                                                          |
+| `review-id`             | No       | `""`    | Review id for `pull_request_review` events                                                           |
+| `feedback`              | Yes      | -       | The feedback text to apply                                                                           |
+| `usage-threshold`       | No       | `"20"`  | Minimum remaining usage percentage required for Codex to run                                         |
 
 ## Example
 
@@ -77,6 +78,7 @@ jobs:
         with:
           repository: ${{ github.repository }}
           event-name: ${{ github.event_name }}
+          elevated-github-token: ${{ secrets.WORKFLOW_TOKEN }}
           issue-number: ${{ github.event.issue.number }}
           pull-request-number: ${{ github.event.pull_request.number }}
           issue-comment-author: ${{ github.event.comment.user.login }}
@@ -104,7 +106,7 @@ Defaults:
 - If remaining usage is below the configured threshold, the action comments on the PR and exits without running Codex.
 - The action stores a hidden `codex-session-id` marker in the PR body so later runs can resume context.
 - If there are no file changes after Codex runs, no commit is created.
-- If Codex may modify `.github/workflows/*`, pass a fine-grained PAT or machine-user token as `github-token`. If you omit it, the action uses `github.token`.
+- The action uses `github-token` or `github.token` for comments and normal PR reads. If workflow-file writes need stronger permissions, set `elevated-github-token` so only push and PR edit operations retry with the elevated token.
 
 ## License
 

@@ -45,15 +45,16 @@ If these are not enabled, the branch may be pushed successfully while PR creatio
 
 ## Inputs
 
-| Name                 | Required | Default  | Description                                                                                          |
-| -------------------- | -------- | -------- | ---------------------------------------------------------------------------------------------------- |
-| `github-token`       | No       | `""`     | Optional GitHub token used by `gh` and checkout. If omitted, the action falls back to `github.token` |
-| `repository`         | Yes      | -        | Repository in `owner/name` format                                                                    |
-| `event-name`         | Yes      | -        | Triggering GitHub event name                                                                         |
-| `event-issue-number` | No       | `""`     | Issue number from the triggering issue event, if any                                                 |
-| `base-branch`        | No       | `master` | Base branch for implementation PRs                                                                   |
-| `max-active-issues`  | No       | `"1"`    | Maximum number of issues that may be actively running or waiting in an open PR at the same time      |
-| `usage-threshold`    | No       | `"20"`   | Minimum remaining usage percentage required for Codex to run                                         |
+| Name                    | Required | Default  | Description                                                                                             |
+| ----------------------- | -------- | -------- | ------------------------------------------------------------------------------------------------------- |
+| `github-token`          | No       | `""`     | Optional GitHub token used by `gh` and checkout. If omitted, the action falls back to `github.token`    |
+| `elevated-github-token` | No       | `""`     | Optional elevated GitHub token used only as a fallback for branch push and PR create or edit operations |
+| `repository`            | Yes      | -        | Repository in `owner/name` format                                                                       |
+| `event-name`            | Yes      | -        | Triggering GitHub event name                                                                            |
+| `event-issue-number`    | No       | `""`     | Issue number from the triggering issue event, if any                                                    |
+| `base-branch`           | No       | `master` | Base branch for implementation PRs                                                                      |
+| `max-active-issues`     | No       | `"1"`    | Maximum number of issues that may be actively running or waiting in an open PR at the same time         |
+| `usage-threshold`       | No       | `"20"`   | Minimum remaining usage percentage required for Codex to run                                            |
 
 ## Example
 
@@ -80,6 +81,7 @@ jobs:
           repository: ${{ github.repository }}
           event-name: ${{ github.event_name }}
           event-issue-number: ${{ github.event.issue.number }}
+          elevated-github-token: ${{ secrets.WORKFLOW_TOKEN }}
           base-branch: master
           max-active-issues: "3"
           usage-threshold: "20"
@@ -110,10 +112,11 @@ Defaults:
 
 - If no eligible issue exists, the run exits cleanly.
 - The action counts open `codex:running` and `codex:pr-open` issues together and only starts new work when that total is below `max-active-issues`.
+- Issues that already have `codex:running` or `codex:pr-open` are not eligible for re-selection, so open implementation PRs stay in review/feedback mode instead of being re-implemented.
 - If remaining usage is below the configured threshold, the issue is re-queued and retried on the next scheduled run.
 - The action hard-resets and cleans the repository before Codex starts work in order to guarantee a clean branch state.
 - If Codex does not push the branch, the issue is marked `codex:needs-human` and no PR is created.
-- If Codex may modify `.github/workflows/*`, pass a fine-grained PAT or machine-user token as `github-token`. If you omit it, the action uses `github.token`.
+- The action uses `github-token` or `github.token` for labels, comments, and issue state. If workflow-file writes or PR creation need stronger permissions, set `elevated-github-token` so only push and PR mutation operations retry with the elevated token.
 
 ## License
 

@@ -9,6 +9,10 @@ inputs:
     description: Optional GitHub token used by gh and checkout. If omitted, the action falls back to github.token.
     required: false
     default: ""
+  elevated-github-token:
+    description: Optional elevated GitHub token used only as a fallback for branch push and PR edit operations.
+    required: false
+    default: ""
   repository:
     description: Repository in owner/name format.
     required: true
@@ -54,10 +58,25 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Resolve GitHub tokens
+      id: tokens
+      shell: bash
+      env:
+        GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
+        DEFAULT_GITHUB_TOKEN: ${{ github.token }}
+        ELEVATED_GITHUB_TOKEN_INPUT: ${{ inputs.elevated-github-token }}
+      run: |
+        if [[ -n "${GITHUB_TOKEN_INPUT}" ]]; then
+          echo "primary=${GITHUB_TOKEN_INPUT}" >> "$GITHUB_OUTPUT"
+        else
+          echo "primary=${DEFAULT_GITHUB_TOKEN}" >> "$GITHUB_OUTPUT"
+        fi
+        echo "elevated=${ELEVATED_GITHUB_TOKEN_INPUT}" >> "$GITHUB_OUTPUT"
+
     - name: Acknowledge Codex feedback request
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ steps.tokens.outputs.primary }}
         REPO: ${{ inputs.repository }}
         EVENT_NAME: ${{ inputs.event-name }}
         PR_NUMBER: ${{ inputs.pull-request-number }}
@@ -82,24 +101,11 @@ runs:
             -f content='eyes' >/dev/null 2>&1 || true
         fi
 
-    - name: Resolve repository write token
-      id: write_token
-      shell: bash
-      env:
-        GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
-        DEFAULT_GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        if [[ -n "${GITHUB_TOKEN_INPUT}" ]]; then
-          echo "value=${GITHUB_TOKEN_INPUT}" >> "$GITHUB_OUTPUT"
-        else
-          echo "value=${DEFAULT_GITHUB_TOKEN}" >> "$GITHUB_OUTPUT"
-        fi
-
     - name: Checkout repository
       uses: actions/checkout@v6
       with:
         fetch-depth: 0
-        token: ${{ steps.write_token.outputs.value }}
+        token: ${{ steps.tokens.outputs.primary }}
 
     - name: Resolve PR number
       id: pr
@@ -220,7 +226,7 @@ runs:
       if: ${{ steps.guard.outputs.allow != 'true' }}
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ steps.tokens.outputs.primary }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         REASON: ${{ steps.guard.outputs.reason }}
         FIVE_HOUR: ${{ steps.guard.outputs.five_hour_remaining }}
@@ -233,7 +239,7 @@ runs:
       id: config
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ steps.tokens.outputs.primary }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
       run: |
         issue_number="$(gh pr view "$PR_NUMBER" --json closingIssuesReferences --jq '.closingIssuesReferences[0].number // ""')"
@@ -280,7 +286,7 @@ runs:
       if: ${{ steps.guard.outputs.allow == 'true' }}
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.write_token.outputs.value }}
+        GH_TOKEN: ${{ steps.tokens.outputs.primary }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
       run: gh pr checkout "$PR_NUMBER"
 
@@ -289,7 +295,7 @@ runs:
       id: codex_feedback
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.write_token.outputs.value }}
+        GH_TOKEN: ${{ steps.tokens.outputs.primary }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         CODEX_MODEL: ${{ steps.config.outputs.model }}
         CODEX_REASONING: ${{ steps.config.outputs.reasoning }}
@@ -367,7 +373,9 @@ runs:
       if: ${{ steps.guard.outputs.allow == 'true' }}
       shell: bash
       env:
-        GH_TOKEN: ${{ steps.write_token.outputs.value }}
+        GH_TOKEN: ${{ steps.tokens.outputs.primary }}
+        PRIMARY_GITHUB_TOKEN: ${{ steps.tokens.outputs.primary }}
+        ELEVATED_GITHUB_TOKEN: ${{ steps.tokens.outputs.elevated }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         CODEX_SESSION_ID: ${{ steps.codex_feedback.outputs.session_id }}
         REPO: ${{ inputs.repository }}
@@ -377,6 +385,25 @@ runs:
         REVIEW_COMMENT_ID: ${{ inputs.review-comment-id }}
       run: |
         set -euo pipefail
+
+        push_with_token() {
+          local token="$1"
+          local branch
+          branch="$(git branch --show-current)"
+          git push "https://x-access-token:${token}@github.com/${REPO}.git" "HEAD:refs/heads/${branch}"
+        }
+
+        gh_pr_edit_with_fallback() {
+          if GH_TOKEN="${PRIMARY_GITHUB_TOKEN}" gh pr edit "$@"; then
+            return 0
+          fi
+          if [[ -n "${ELEVATED_GITHUB_TOKEN}" ]]; then
+            GH_TOKEN="${ELEVATED_GITHUB_TOKEN}" gh pr edit "$@"
+            return $?
+          fi
+          return 1
+        }
+
         if [[ -n "$(git status --porcelain)" ]]; then
           git add -A
           git config user.name "Codex"
@@ -384,7 +411,13 @@ runs:
           git commit \
             -m "Codex: apply PR feedback #${PR_NUMBER}" \
             -m "Co-authored-by: Codex <noreply@openai.com>" || true
-          git push
+          if ! push_with_token "${PRIMARY_GITHUB_TOKEN}"; then
+            if [[ -n "${ELEVATED_GITHUB_TOKEN}" ]]; then
+              push_with_token "${ELEVATED_GITHUB_TOKEN}"
+            else
+              exit 1
+            fi
+          fi
         fi
 
         if [[ -n "${CODEX_SESSION_ID:-}" ]]; then
@@ -392,7 +425,7 @@ runs:
           existing_session_id="$(printf '%s' "$pr_body_current" | grep -Eo 'codex-session-id: [0-9a-fA-F-]{36}' | awk '{print $2}' | head -n1 || true)"
           if [[ -z "$existing_session_id" ]]; then
             pr_body_new="${pr_body_current}"$'\n\n'"<!-- codex-session-id: ${CODEX_SESSION_ID} -->"
-            gh pr edit "$PR_NUMBER" --body "$pr_body_new"
+            gh_pr_edit_with_fallback "$PR_NUMBER" --body "$pr_body_new"
           fi
         fi
 
