@@ -47,7 +47,7 @@ If these are not enabled, the branch may be pushed successfully while PR creatio
 
 | Name | Required | Default | Description |
 | --- | --- | --- | --- |
-| `github-token` | Yes | - | GitHub token used by `gh` and checkout |
+| `github-token` | No | `""` | Optional GitHub token used by `gh` and checkout. If omitted, the action falls back to `github.token` |
 | `repository` | Yes | - | Repository in `owner/name` format |
 | `event-name` | Yes | - | Triggering GitHub event name |
 | `event-issue-number` | No | `""` | Issue number from the triggering issue event, if any |
@@ -76,7 +76,6 @@ jobs:
     steps:
       - uses: iamomiid/taskal/codex-implement-ticket@main
         with:
-          github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           event-name: ${{ github.event_name }}
           event-issue-number: ${{ github.event.issue.number }}
@@ -112,6 +111,7 @@ Defaults:
 - If remaining usage is below the configured threshold, the issue is re-queued and retried on the next scheduled run.
 - The action hard-resets and cleans the repository before Codex starts work in order to guarantee a clean branch state.
 - If Codex does not push the branch, the issue is marked `codex:needs-human` and no PR is created.
+- If Codex may modify `.github/workflows/*`, pass a fine-grained PAT or machine-user token as `github-token`. If you omit it, the action uses `github.token`.
 
 ## License
 

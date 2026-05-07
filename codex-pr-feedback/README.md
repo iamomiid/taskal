@@ -35,7 +35,7 @@ If a prior Codex session id is stored in the PR body, the action resumes that se
 
 | Name | Required | Default | Description |
 | --- | --- | --- | --- |
-| `github-token` | Yes | - | GitHub token used by `gh` and checkout |
+| `github-token` | No | `""` | Optional GitHub token used by `gh` and checkout. If omitted, the action falls back to `github.token` |
 | `repository` | Yes | - | Repository in `owner/name` format |
 | `event-name` | Yes | - | Triggering GitHub event name |
 | `issue-number` | No | `""` | Issue number for `issue_comment` events |
@@ -75,7 +75,6 @@ jobs:
     steps:
       - uses: iamomiid/taskal/codex-pr-feedback@main
         with:
-          github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           event-name: ${{ github.event_name }}
           issue-number: ${{ github.event.issue.number }}
@@ -105,6 +104,7 @@ Defaults:
 - If remaining usage is below the configured threshold, the action comments on the PR and exits without running Codex.
 - The action stores a hidden `codex-session-id` marker in the PR body so later runs can resume context.
 - If there are no file changes after Codex runs, no commit is created.
+- If Codex may modify `.github/workflows/*`, pass a fine-grained PAT or machine-user token as `github-token`. If you omit it, the action uses `github.token`.
 
 ## License
 

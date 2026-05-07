@@ -6,8 +6,9 @@ branding:
 
 inputs:
   github-token:
-    description: GitHub token used by gh and checkout.
-    required: true
+    description: Optional GitHub token used by gh and checkout. If omitted, the action falls back to github.token.
+    required: false
+    default: ""
   repository:
     description: Repository in owner/name format.
     required: true
@@ -30,11 +31,24 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Resolve repository write token
+      id: write_token
+      shell: bash
+      env:
+        GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
+        DEFAULT_GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        if [[ -n "${GITHUB_TOKEN_INPUT}" ]]; then
+          echo "value=${GITHUB_TOKEN_INPUT}" >> "$GITHUB_OUTPUT"
+        else
+          echo "value=${DEFAULT_GITHUB_TOKEN}" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Checkout repository
       uses: actions/checkout@v6
       with:
         fetch-depth: 0
-        token: ${{ inputs.github-token }}
+        token: ${{ steps.write_token.outputs.value }}
 
     - name: Ensure automation labels exist
       shell: bash
@@ -272,7 +286,7 @@ runs:
       id: codex_run
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ steps.write_token.outputs.value }}
         ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
         CODEX_MODEL: ${{ steps.config.outputs.model }}
         CODEX_REASONING: ${{ steps.config.outputs.reasoning }}
@@ -305,8 +319,8 @@ runs:
           printf '3. Keep changes focused to this issue.\n'
           printf '4. Commit the changes with a clear, context-aware commit message and include trailer: "Co-authored-by: Codex <noreply@openai.com>".\n'
           printf '5. Push the branch "%s" to origin.\n' "$branch"
-          printf '6. Open a pull request to base branch "%s" with a context-aware title and description, and include "Closes #%s" in the PR description.\n' "$BASE_BRANCH" "$ISSUE_NUMBER"
-          printf '7. If a PR for this branch already exists, update/push branch only and do not create a duplicate PR.\n'
+          printf '6. Do not create or edit the pull request directly; this workflow will create or update the PR after your push.\n'
+          printf '7. If a PR for this branch already exists, just update and push the branch.\n'
           printf '8. At the end, print a short summary of what changed.\n'
         } > "$prompt_file"
 
@@ -345,7 +359,7 @@ runs:
       if: ${{ steps.issue.outputs.issue_number != '' && steps.guard.outputs.allow == 'true' }}
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ steps.write_token.outputs.value }}
         ISSUE_NUMBER: ${{ steps.issue.outputs.issue_number }}
         CODEX_SESSION_ID: ${{ steps.codex_run.outputs.session_id }}
         BASE_BRANCH: ${{ inputs.base-branch }}

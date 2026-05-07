@@ -26,6 +26,8 @@ The actions also read Codex auth data from:
 - `$CODEX_HOME/auth.json`, or
 - `~/.codex/auth.json`
 
+If Codex may change files under `.github/workflows/*`, pass an elevated repository secret as the action's optional `github-token` input. If no token is provided, the action falls back to `${{ github.token }}`.
+
 ## GitHub Repository Settings
 
 If you want these actions to push branches and create pull requests, make sure your repository allows workflows to write to the repository.
@@ -89,7 +91,6 @@ jobs:
       - name: Apply PR feedback
         uses: iamomiid/taskal/codex-pr-feedback@main
         with:
-          github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           event-name: ${{ github.event_name }}
           issue-number: ${{ github.event.issue.number }}
@@ -130,7 +131,6 @@ jobs:
       - name: Implement next ticket
         uses: iamomiid/taskal/codex-implement-ticket@main
         with:
-          github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           event-name: ${{ github.event_name }}
           event-issue-number: ${{ github.event.issue.number }}
@@ -171,6 +171,7 @@ If no labels are provided, both actions default to:
 - The usage guard depends on the current Codex auth file format and the ChatGPT usage endpoint remaining compatible.
 - `codex-implement-ticket` resets and cleans the working tree before starting work inside the checked-out repository.
 - `codex-pr-feedback` resumes prior Codex context when it finds a stored session id in the PR body.
+- For repositories where Codex may edit `.github/workflows/*`, pass `github-token` with a token that can write workflow files; a fine-grained PAT or machine-user token is the safest path.
 
 ## Versioning
 

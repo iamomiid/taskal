@@ -6,8 +6,9 @@ branding:
 
 inputs:
   github-token:
-    description: GitHub token used by gh and checkout.
-    required: true
+    description: Optional GitHub token used by gh and checkout. If omitted, the action falls back to github.token.
+    required: false
+    default: ""
   repository:
     description: Repository in owner/name format.
     required: true
@@ -81,11 +82,24 @@ runs:
             -f content='eyes' >/dev/null 2>&1 || true
         fi
 
+    - name: Resolve repository write token
+      id: write_token
+      shell: bash
+      env:
+        GITHUB_TOKEN_INPUT: ${{ inputs.github-token }}
+        DEFAULT_GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        if [[ -n "${GITHUB_TOKEN_INPUT}" ]]; then
+          echo "value=${GITHUB_TOKEN_INPUT}" >> "$GITHUB_OUTPUT"
+        else
+          echo "value=${DEFAULT_GITHUB_TOKEN}" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Checkout repository
       uses: actions/checkout@v6
       with:
         fetch-depth: 0
-        token: ${{ inputs.github-token }}
+        token: ${{ steps.write_token.outputs.value }}
 
     - name: Resolve PR number
       id: pr
@@ -266,7 +280,7 @@ runs:
       if: ${{ steps.guard.outputs.allow == 'true' }}
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ steps.write_token.outputs.value }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
       run: gh pr checkout "$PR_NUMBER"
 
@@ -275,7 +289,7 @@ runs:
       id: codex_feedback
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ steps.write_token.outputs.value }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         CODEX_MODEL: ${{ steps.config.outputs.model }}
         CODEX_REASONING: ${{ steps.config.outputs.reasoning }}
@@ -353,7 +367,7 @@ runs:
       if: ${{ steps.guard.outputs.allow == 'true' }}
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ steps.write_token.outputs.value }}
         PR_NUMBER: ${{ steps.pr.outputs.number }}
         CODEX_SESSION_ID: ${{ steps.codex_feedback.outputs.session_id }}
         REPO: ${{ inputs.repository }}
