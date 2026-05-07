@@ -53,7 +53,7 @@ Docs: [`codex-pr-feedback/README.md`](./codex-pr-feedback/README.md)
 
 ### `codex-implement-ticket`
 
-Looks for the next open issue labeled `codex:implement`, asks Codex to implement it, pushes a branch, and ensures a PR exists.
+Looks for the next open issue labeled `codex:implement`, asks Codex to implement it, pushes a branch, and ensures a PR exists. You can cap how many implementation items are active at once, so review can happen in batches instead of strictly one by one.
 
 Docs: [`codex-implement-ticket/README.md`](./codex-implement-ticket/README.md)
 
@@ -135,6 +135,7 @@ jobs:
           event-name: ${{ github.event_name }}
           event-issue-number: ${{ github.event.issue.number }}
           base-branch: master
+          max-active-issues: "3"
           usage-threshold: "20"
 ```
 

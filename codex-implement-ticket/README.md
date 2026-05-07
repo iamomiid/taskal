@@ -12,7 +12,7 @@ When triggered, the action:
 
 1. Ensures the required automation labels exist
 2. Selects the next eligible open issue labeled `codex:implement`
-3. Prevents parallel work if another issue is already active
+3. Limits active work based on the configured cap for running issues and open implementation PRs
 4. Marks the issue as running
 5. Checks remaining Codex usage against a configured threshold
 6. Reads optional model and reasoning settings from issue labels
@@ -45,14 +45,15 @@ If these are not enabled, the branch may be pushed successfully while PR creatio
 
 ## Inputs
 
-| Name | Required | Default | Description |
-| --- | --- | --- | --- |
-| `github-token` | No | `""` | Optional GitHub token used by `gh` and checkout. If omitted, the action falls back to `github.token` |
-| `repository` | Yes | - | Repository in `owner/name` format |
-| `event-name` | Yes | - | Triggering GitHub event name |
-| `event-issue-number` | No | `""` | Issue number from the triggering issue event, if any |
-| `base-branch` | No | `master` | Base branch for implementation PRs |
-| `usage-threshold` | No | `"20"` | Minimum remaining usage percentage required for Codex to run |
+| Name                 | Required | Default  | Description                                                                                          |
+| -------------------- | -------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `github-token`       | No       | `""`     | Optional GitHub token used by `gh` and checkout. If omitted, the action falls back to `github.token` |
+| `repository`         | Yes      | -        | Repository in `owner/name` format                                                                    |
+| `event-name`         | Yes      | -        | Triggering GitHub event name                                                                         |
+| `event-issue-number` | No       | `""`     | Issue number from the triggering issue event, if any                                                 |
+| `base-branch`        | No       | `master` | Base branch for implementation PRs                                                                   |
+| `max-active-issues`  | No       | `"1"`    | Maximum number of issues that may be actively running or waiting in an open PR at the same time      |
+| `usage-threshold`    | No       | `"20"`   | Minimum remaining usage percentage required for Codex to run                                         |
 
 ## Example
 
@@ -80,6 +81,7 @@ jobs:
           event-name: ${{ github.event_name }}
           event-issue-number: ${{ github.event.issue.number }}
           base-branch: master
+          max-active-issues: "3"
           usage-threshold: "20"
 ```
 
@@ -107,7 +109,7 @@ Defaults:
 ## Behavior Notes
 
 - If no eligible issue exists, the run exits cleanly.
-- If another issue is already labeled `codex:running` or `codex:pr-open`, the run exits to avoid overlapping work.
+- The action counts open `codex:running` and `codex:pr-open` issues together and only starts new work when that total is below `max-active-issues`.
 - If remaining usage is below the configured threshold, the issue is re-queued and retried on the next scheduled run.
 - The action hard-resets and cleans the repository before Codex starts work in order to guarantee a clean branch state.
 - If Codex does not push the branch, the issue is marked `codex:needs-human` and no PR is created.
